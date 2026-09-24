@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ilmora – Learning Management System</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;600;800&display=swap" rel="stylesheet">
+<script type="module" src="/src/main.js"></script></head><body>
+<video id="v" muted playsinline preload="auto"></video><div id="dim"></div><div id="sp"></div>
+<nav class="glass"><b>Ilmora</b><a href="#story">Tour</a><a href="#app">Platform</a><span id="who"></span></nav>
+<main id="story">
+<section class="sc"><div class="glass tilt"><h1>Learn like the campus never closes.</h1><p>Ilmora puts courses, quizzes, assignments and progress tracking in one workspace for students, instructors and admins.</p><div class="row"><a class="btn p" href="#app">Start learning</a><a class="btn" href="#app" onclick="setTimeout(()=>demo('student'),400)">Try the demo</a></div><p style="font-size:.85rem">Keep scrolling to walk through the campus.</p></div></section>
+<section class="sc"><div class="glass tilt"><h2>Every course, lesson and instructor in one place.</h2><p>Instructors build courses lesson by lesson. Students enroll, study and pick up exactly where they stopped.</p><div class="row" id="st"></div></div></section>
+<section class="sc"><div class="glass tilt"><h2>Quizzes, assignments and progress you can see.</h2><p>Quizzes are graded instantly. Assignments get a score and written feedback. Progress updates with every lesson you finish.</p><div class="row"><span class="chip">Instant quiz scores</span><span class="chip">Graded assignments</span><span class="chip">Progress per course</span><span class="chip">Student, instructor and admin roles</span></div></div></section>
+</main>
+<div id="app"></div><div id="modal"></div>
+</body></html>

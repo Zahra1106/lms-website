@@ -1,0 +1,106 @@
+import './style.css';
+import QRCode from 'qrcode';
+
+const $=s=>document.querySelector(s),E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),uid=()=>Math.random().toString(36).slice(2,9);
+let S,pub={courses:0,students:0,lessons:0},ui={tab:'dash',mode:'in'},cur=null,quizOn=null,res=null;
+const me=()=>S&&S.users.find(u=>u.id===S.me),C=id=>S.courses.find(c=>c.id===id),U=id=>S.users.find(u=>u.id===id)||{name:'Unknown'};
+const canEdit=c=>{const m=me();return m&&(m.role==='admin'||(m.role==='instructor'&&c.by===m.id))};
+const pct=(u,c)=>c.lessons.length?Math.round(100*(S.done[u+c.id]||[]).filter(i=>i<c.lessons.length).length/c.lessons.length):0;
+const mine=()=>S.enr[S.me]||[];
+const lt=l=>{const[t,u]=String(l).split('|').map(s=>s.trim());return E(t)+(u&&/^https?:\/\//.test(u)?` <a href="${E(u)}" target="_blank" rel="noopener noreferrer" style="color:var(--cyan)">Open material</a>`:'')};
+function toast(t){const d=document.createElement('div');d.className='toast glass';d.textContent=t;document.body.append(d);setTimeout(()=>d.remove(),2400)}
+async function api(p,m='GET',b,quiet){let r;try{r=await fetch('/api'+p,{method:m,headers:{'Content-Type':'application/json','X-Requested-With':'fetch'},body:b?JSON.stringify(b):undefined})}catch(e){quiet||toast('Cannot reach the server. Start it with npm run dev.');throw e}
+ let d={};try{d=await r.json()}catch(e){}
+ if(r.status===401&&S){S=null;render()}
+ if(!r.ok){quiet||toast(d.error||'Something went wrong. Try again.');throw new Error(d.error)}return d}
+const refresh=async()=>{S=await api('/state');render();if(cur&&C(cur))openC(cur)};
+const act=async(fn,ok)=>{try{await fn();await refresh();ok&&toast(ok)}catch(e){}};
+/* scroll-linked video */
+const v=$('#v');let tgt=0,pos=0,dur=5;const RM=matchMedia('(prefers-reduced-motion: reduce)').matches;
+fetch('/video.mp4').then(r=>r.blob()).then(b=>{v.src=URL.createObjectURL(b);v.onloadedmetadata=()=>{dur=v.duration;v.pause()}})
+function onS(){const st=$('#story'),h=st.offsetHeight-innerHeight,y=scrollY;tgt=Math.min(1,Math.max(0,y/h));
+ $('#dim').style.opacity=.12+.75*Math.max(0,Math.min(1,(y-h)/(innerHeight*.7)));
+ $('#sp').style.transform=`scaleX(${y/Math.max(1,document.documentElement.scrollHeight-innerHeight)})`;
+ document.querySelectorAll('.sc .glass').forEach(g=>{const r=g.getBoundingClientRect(),d=Math.min(1,Math.abs(r.top+r.height/2-innerHeight/2)/(innerHeight*.55));g.style.opacity=1-d*.9;g.style.transform=`translateY(${(r.top+r.height/2>innerHeight/2?1:-1)*d*50}px) rotateX(${(r.top+r.height/2>innerHeight/2?-1:1)*d*10}deg)`})}
+(function tick(){pos+=(tgt-pos)*(RM?1:.12);const t=pos*(dur-.05);if(!v.seeking&&Math.abs(v.currentTime-t)>.02)v.currentTime=t;requestAnimationFrame(tick)})();
+addEventListener('scroll',onS,{passive:true});addEventListener('resize',onS);
+/* 3D tilt */
+document.addEventListener('mousemove',e=>{document.querySelectorAll('.tilt:hover,.card:hover').forEach(el=>{if(RM)return;const r=el.getBoundingClientRect(),x=(e.clientX-r.left)/r.width-.5,y=(e.clientY-r.top)/r.height-.5;el.style.transform=`perspective(900px) rotateY(${x*12}deg) rotateX(${-y*12}deg)`})});
+document.addEventListener('mouseout',e=>{const t=e.target.closest&&e.target.closest('.card');if(t)t.style.transform=''});
+/* auth + actions (all checks are enforced again on the server) */
+async function auth(path,b){try{const d=await api(path,'POST',b);if(d.need2fa){ui.need2fa=true;ui.cred=b;return render()}ui.need2fa=false;ui.cred=null;ui.tab='dash';await refresh()}catch(e){}}
+const login=e=>{e.preventDefault();const f=new FormData(e.target);auth('/login',{email:f.get('email'),password:f.get('pw'),code:f.get('code')||''})};
+const signup=e=>{e.preventDefault();const f=new FormData(e.target);auth('/signup',{name:f.get('name'),email:f.get('email'),password:f.get('pw'),role:f.get('role')})};
+const demo=r=>auth('/login',{email:{student:'ali',instructor:'sara',admin:'admin'}[r]+'@ilmora.pk',password:'demo1234'});
+const closeM=()=>{$('#modal').innerHTML='';cur=null;quizOn=null;res=null};
+const logout=async()=>{try{await api('/logout','POST')}catch(e){}S=null;ui.need2fa=false;ui.cred=null;closeM();render()};
+const go=t=>{ui.tab=t;render()};
+const setMode=m=>{ui.mode=m;render()};
+const startQuiz=id=>{quizOn=id;res=null;openC(id)};
+const enroll=id=>act(()=>api(`/courses/${id}/enroll`,'POST'),'Enrolled');
+const toggle=(cid,i)=>act(()=>api(`/courses/${cid}/lessons/${i}/toggle`,'POST'));
+async function gradeQuiz(cid){const a=C(cid).quiz.map((q,i)=>{const r=document.querySelector(`input[name=q${i}]:checked`);return r?+r.value:null});try{const d=await api(`/courses/${cid}/quiz`,'POST',{answers:a});res={n:d.s,t:d.n};quizOn=null;await refresh()}catch(e){}}
+function submitA(cid,aid){const t=$('#sub'+aid).value.trim();if(!t)return toast('Write your answer before submitting.');act(()=>api(`/courses/${cid}/submit`,'POST',{a:aid,text:t}),'Submitted')}
+const putC=(cid,fn,ok)=>{const c=structuredClone(C(cid));fn(c);return act(()=>api('/courses/'+cid,'PUT',c),ok)};
+const addLesson=cid=>{const t=$('#nl').value.trim();t&&putC(cid,c=>c.lessons.push(t))};
+const delLesson=(cid,i)=>putC(cid,c=>c.lessons.splice(i,1));
+function addQ(cid){const o=[0,1,2,3].map(i=>$('#o'+i).value.trim()),q=$('#nq').value.trim();if(!q||o.some(x=>!x))return toast('Fill the question and all four options.');putC(cid,c=>c.quiz.push({q,o,a:+$('#oa').value}),'Question added')}
+const delQ=(cid,i)=>putC(cid,c=>c.quiz.splice(i,1));
+const addA=cid=>{const t=$('#na').value.trim();t&&putC(cid,c=>c.assign.push({id:uid(),t,due:$('#nd').value}))};
+const delA=(cid,aid)=>putC(cid,c=>{c.assign=c.assign.filter(a=>a.id!==aid)});
+const editC=cid=>{const c=C(cid),t=prompt('Course title',c.title);if(!t)return;const d=prompt('Description',c.desc);putC(cid,x=>{x.title=t;x.desc=d||x.desc},'Saved')};
+function newCourse(e){e.preventDefault();const f=new FormData(e.target);act(async()=>{await api('/courses','POST',{icon:f.get('icon'),title:f.get('title'),desc:f.get('desc'),lessons:f.get('lessons').split('\n')});ui.tab='courses'},'Course published')}
+const delCourse=id=>{if(confirm('Delete this course and its submissions?')){closeM();act(()=>api('/courses/'+id,'DELETE'))}};
+const grade=id=>{const v=$('#g'+id).value,g=+v;if(v===''||isNaN(g)||g<0||g>100)return toast('Enter a score from 0 to 100.');act(()=>api(`/subs/${id}/grade`,'POST',{g,fb:$('#f'+id).value}),'Graded')};
+const setRole=(id,r)=>act(()=>api('/users/'+id,'PATCH',{role:r}),'Role updated');
+const delUser=id=>confirm('Remove this user?')&&act(()=>api('/users/'+id,'DELETE'));
+const filterC=v=>{$('#cl').innerHTML=S.courses.filter(c=>(c.title+c.desc).toLowerCase().includes(v.toLowerCase())).map(courseCard).join('')};
+const certificate=cid=>{const c=C(cid),w=window.open('','_blank');if(!w)return toast('Allow pop-ups to open the certificate.');w.document.write(`<title>Certificate</title><body style="font-family:Georgia,serif;text-align:center;padding:80px;border:12px double #333;margin:20px"><h1>Certificate of completion</h1><p>This certifies that</p><h2>${E(me().name)}</h2><p>has completed</p><h2>${E(c.title)}</h2><p>${new Date().toLocaleDateString()} · Ilmora</p>`);w.document.close();w.print()};
+/* views */
+const chPw=e=>{e.preventDefault();const f=new FormData(e.target);act(()=>api('/password','POST',{old:f.get('old'),new:f.get('nw')}),'Password changed')};
+async function tfSetup(){try{const d=await api('/2fa/setup','POST');ui.tf={secret:d.secret,qr:await QRCode.toDataURL(d.uri,{margin:1,width:180})};render()}catch(e){}}
+const tfOn=e=>{e.preventDefault();act(async()=>{await api('/2fa/enable','POST',{code:new FormData(e.target).get('code')});ui.tf=null},'Two-factor is on')};
+const tfOff=e=>{e.preventDefault();const f=new FormData(e.target);act(()=>api('/2fa/disable','POST',{password:f.get('pw'),code:f.get('code')}),'Two-factor is off')};
+const approve=id=>act(()=>api(`/users/${id}/approve`,'POST'),'Instructor approved');
+async function resetPw(id){if(!confirm('Reset this password? The user is signed out and must choose a new one.'))return;try{const d=await api(`/users/${id}/reset`,'POST');prompt('Temporary password. Share it privately, it is shown once:',d.temp);await refresh()}catch(e){}}
+function acct(m){return`<div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))"><form class="glass" style="padding:24px" onsubmit="chPw(event)"><h3>Change password</h3>${m.must?'<p class="bad">An admin reset your password. Choose a new one to continue.</p>':''}<label>Current password</label><input name="old" type="password" required autocomplete="current-password"><label>New password (8+ characters)</label><input name="nw" type="password" minlength="8" required autocomplete="new-password"><button class="btn p">Save password</button></form>
+${m.must?'':`<div class="glass" style="padding:24px"><h3>Two-factor authentication</h3>${m.totp?`<p class="ok">On. Signing in needs a code from your authenticator app.</p><form onsubmit="tfOff(event)"><label>Password</label><input name="pw" type="password" required><label>Current code</label><input name="code" inputmode="numeric" required><button class="btn d">Turn off</button></form>`:ui.tf?`<p>Scan this with Google Authenticator or Microsoft Authenticator, or type the key by hand.</p><img src="${ui.tf.qr}" alt="QR code for two-factor setup" width="180" height="180" style="background:#fff;border-radius:12px"><p style="word-break:break-all;color:var(--ink)">${E(ui.tf.secret)}</p><form onsubmit="tfOn(event)"><label>6-digit code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" required><button class="btn p">Turn on</button></form>`:`<p>Add a second step at sign-in with an authenticator app.</p><button class="btn p" onclick="tfSetup()">Set up two-factor</button>`}</div>`}</div>`}
+
+function openC(id){const sy=document.querySelector('.modal')?.scrollTop||0;cur=id;const c=C(id),m=me(),en=mine().includes(id),ed=canEdit(c),st=m.role==='student',done=S.done[m.id+id]||[];
+ const best=S.scores.filter(s=>s.u===m.id&&s.c===id).sort((a,b)=>b.s-a.s)[0];
+ $('#modal').innerHTML=`<div class="modal" onclick="event.target===this&&closeM()"><div class="glass" role="dialog" aria-label="${E(c.title)}"><div class="row" style="margin:0"><h2 style="font-size:1.9rem;flex:1">${c.icon} ${E(c.title)}</h2><button class="btn s" onclick="closeM()">Close</button></div><p>${E(c.desc)} Taught by ${E(U(c.by).name)}.</p>
+ ${st&&!en?`<button class="btn p" onclick="enroll('${id}')">Enroll in this course</button>`:''}${st&&en?`<div class="bar"><i style="width:${pct(m.id,c)}%"></i></div><p>${pct(m.id,c)}% complete</p>`:''}${ed?`<button class="btn s" onclick="editC('${id}')">Edit title and description</button> <button class="btn s d" onclick="delCourse('${id}')">Delete course</button>`:''}${st&&en&&pct(m.id,c)===100?`<button class="btn s p" onclick="certificate('${id}')">Get certificate</button>`:''}
+ ${ed?`<div class="sec"><h3>Enrolled students</h3>${Object.entries(S.enr).filter(([u,a])=>a.includes(id)).map(([u])=>`<div class="item"><span>${E(U(u).name)}</span><span style="max-width:200px"><div class="bar"><i style="width:${pct(u,c)}%"></i></div></span><small>${pct(u,c)}%</small></div>`).join('')||'<p>No students enrolled yet.</p>'}</div>`:''}<div class="sec"><h3>Lessons</h3>${c.lessons.map((l,i)=>`<div class="item"><span>${i+1}. ${lt(l)}</span>${st&&en?`<button class="btn s" onclick="toggle('${id}',${i})">${done.includes(i)?'✓ Done':'Mark done'}</button>`:''}${ed?`<button class="btn s d" aria-label="Remove lesson" onclick="delLesson('${id}',${i})">✕</button>`:''}</div>`).join('')||'<p>No lessons yet.</p>'}
+ ${ed?`<div class="row"><input id="nl" placeholder="New lesson title" style="flex:1"><button class="btn s" onclick="addLesson('${id}')">Add lesson</button></div>`:''}</div>
+ <div class="sec"><h3>Quiz (${c.quiz.length} questions)</h3>${ed?c.quiz.map((q,i)=>`<div class="item"><span>${E(q.q)}</span><button class="btn s d" aria-label="Remove question" onclick="delQ('${id}',${i})">✕</button></div>`).join(''):''}
+ ${res?`<p class="ok">You scored ${res.n} of ${res.t}.</p>`:''}${best?`<p>Best score: ${best.s}/${best.n}</p>`:''}
+ ${st&&en&&c.quiz.length&&quizOn!==id?`<button class="btn p" onclick="startQuiz('${id}')">${best?'Retake quiz':'Start quiz'}</button>`:''}
+ ${quizOn===id?c.quiz.map((q,i)=>`<div class="sec"><b>${i+1}. ${E(q.q)}</b>${q.o.map((o,j)=>`<div><label><input type="radio" style="width:auto" name="q${i}" value="${j}"> ${E(o)}</label></div>`).join('')}</div>`).join('')+`<button class="btn p" onclick="gradeQuiz('${id}')" style="margin-top:12px">Submit answers</button>`:''}
+ ${ed?`<details class="sec"><summary>Add a question</summary><input id="nq" placeholder="Question"><input id="o0" placeholder="Option A"><input id="o1" placeholder="Option B"><input id="o2" placeholder="Option C"><input id="o3" placeholder="Option D"><label>Correct option</label><select id="oa"><option value="0">A</option><option value="1">B</option><option value="2">C</option><option value="3">D</option></select><button class="btn s" onclick="addQ('${id}')">Add question</button></details>`:''}</div>
+ <div class="sec"><h3>Assignments</h3>${c.assign.map(a=>{const s=S.subs.find(x=>x.a===a.id&&x.u===m.id);return`<div class="sec"><b>${E(a.t)}</b>${a.due?` <small>Due ${E(a.due)}</small>`:''}${ed?` <button class="btn s d" onclick="delA('${id}','${a.id}')">Remove</button>`:''}${st&&en?(s?`<p>${s.g==null?'Submitted. Waiting for review.':`<span class="ok">Score ${s.g}/100.</span> ${E(s.fb)}`}</p>`:`<textarea id="sub${a.id}" placeholder="Write your answer"></textarea><button class="btn s" onclick="submitA('${id}','${a.id}')">Submit assignment</button>`):''}</div>`}).join('')||'<p>No assignments yet.</p>'}
+ ${ed?`<div class="row"><input id="na" placeholder="New assignment brief" style="flex:1"><input id="nd" type="date" aria-label="Due date" style="width:170px"><button class="btn s" onclick="addA('${id}')">Add assignment</button></div>`:''}</div></div></div>`;const md=document.querySelector('.modal');if(md)md.scrollTop=sy}
+function stats(){const el=$('#st');if(el)el.innerHTML=`<div class="stat"><b>${pub.courses}</b>courses</div><div class="stat"><b>${pub.students}</b>students</div><div class="stat"><b>${pub.lessons}</b>lessons</div>`}
+function courseCard(c){const m=me(),en=mine().includes(c.id);return`<div class="glass card"><span class="ic">${c.icon}</span><h3>${E(c.title)}</h3><p>${E(c.desc)}</p>${m.role==='student'&&en?`<div class="bar"><i style="width:${pct(m.id,c)}%"></i></div>`:''}<small>${c.lessons.length} lessons · ${c.quiz.length} quiz questions</small><div class="row" style="margin-top:12px"><button class="btn s p" onclick="openC('${c.id}')">${en?'Continue':'Open'}</button></div></div>`}
+function view(){const m=me(),r=m.role;if(m.must||ui.tab==='acct')return acct(m);
+ if(ui.tab==='courses')return`<input aria-label="Search courses" placeholder="Search courses" oninput="filterC(this.value)" style="max-width:340px;margin-bottom:16px"><div class="cards" id="cl">${S.courses.map(courseCard).join('')}</div>`;
+ if(ui.tab==='new')return r==='student'?'':`<form class="glass" style="padding:26px;max-width:560px" onsubmit="newCourse(event)"><h3>Create a course</h3><label>Title</label><input name="title" required><label>Description</label><input name="desc" required><label>Icon (emoji)</label><input name="icon" maxlength="2" placeholder="📘"><label>Lessons (one per line)</label><textarea name="lessons" required></textarea><button class="btn p">Publish course</button></form>`;
+ if(ui.tab==='grade'){if(r==='student')return'';const list=S.subs.filter(s=>C(s.c)&&canEdit(C(s.c)));return`<div class="glass" style="padding:22px">${list.map(s=>{const c=C(s.c),a=c.assign.find(x=>x.id===s.a);return`<div class="sec"><b>${E(U(s.u).name)}</b> · ${E(c.title)}<p>${E(a?.t)}</p><p style="color:var(--ink)">${E(s.text)}</p><div class="row" style="margin:0"><input id="g${s.id}" type="number" min="0" max="100" placeholder="Score /100" value="${s.g??''}" style="width:130px"><input id="f${s.id}" placeholder="Feedback" value="${E(s.fb)}" style="flex:1"><button class="btn s" onclick="grade('${s.id}')">Save grade</button></div></div>`}).join('')||'<p>No submissions yet. They appear here when students submit assignments.</p>'}</div>`}
+ if(ui.tab==='users'){if(r!=='admin')return'';return`<div class="glass" style="padding:22px">${S.users.map(u=>`<div class="item"><span>${E(u.name)} <small>${E(u.email)}</small> ${u.req?`<span class="chip">wants instructor access</span> <button class="btn s p" onclick="approve('${u.id}')">Approve</button>`:''}</span><select style="width:130px" onchange="setRole('${u.id}',this.value)" ${u.id===S.me?'disabled':''}>${['student','instructor','admin'].map(x=>`<option ${x===u.role?'selected':''}>${x}</option>`).join('')}</select><button class="btn s" onclick="resetPw('${u.id}')" ${u.id===S.me?'disabled':''}>Reset password</button><button class="btn s d" onclick="delUser('${u.id}')" ${u.id===S.me?'disabled':''}>Remove</button></div>`).join('')}</div>`}
+ /* dashboard */
+ const my=r==='student'?S.courses.filter(c=>mine().includes(c.id)):S.courses.filter(canEdit),sc=S.scores.filter(s=>r==='student'?s.u===S.me:my.some(c=>c.id===s.c)),avg=sc.length?Math.round(100*sc.reduce((n,s)=>n+s.s/s.n,0)/sc.length):0;
+ const boxes=r==='student'?[[my.length,'enrolled courses'],[(my.length?Math.round(my.reduce((n,c)=>n+pct(S.me,c),0)/my.length):0)+'%','average progress'],[avg+'%','quiz average'],[S.subs.filter(s=>s.u===S.me&&s.g!=null).length,'assignments graded']]:
+  [[my.length,'courses'],[Object.entries(S.enr).reduce((n,[u,a])=>n+a.filter(id=>my.some(c=>c.id===id)).length,0),'enrollments'],[S.subs.filter(s=>s.g==null&&my.some(c=>c.id===s.c)).length,'awaiting grading'],[avg+'%','quiz average']];
+ return`${m.req?'<div class="glass" style="padding:16px;margin-bottom:18px"><p style="margin:0">Your instructor request is waiting for admin approval. You can study as a student until then.</p></div>':''}<div class="row" style="margin:0 0 20px">${boxes.map(b=>`<div class="glass card stat" style="min-width:170px"><b>${b[0]}</b>${b[1]}</div>`).join('')}</div>
+ <h3 style="margin-bottom:14px">${r==='student'?'Your progress':'Your courses'}</h3><div class="cards">${my.map(c=>courseCard(c)).join('')||`<div class="glass" style="padding:24px"><p>${r==='student'?'You have not enrolled yet. Open Courses and pick one to begin.':'No courses yet. Create one from the Create course tab.'}</p></div>`}</div>`}
+function render(){stats();const m=me();$('#who').innerHTML=m?`<span class="chip">${E(m.name)} · ${m.role}</span> <button class="btn s" onclick="logout()">Sign out</button>`:'';
+ const a=$('#app');
+ if(!m){a.innerHTML=`<div class="glass" style="max-width:460px;margin:auto;padding:30px"><h2 style="font-size:2rem">${ui.mode==='in'?'Sign in to Ilmora':'Create your account'}</h2>
+ ${ui.mode==='in'?`<form onsubmit="login(event)"><label>Email</label><input name="email" type="email" required autocomplete="username" value="${E(ui.cred?.email||'')}"><label>Password</label><input name="pw" type="password" required autocomplete="current-password" value="${E(ui.cred?.password||'')}">${ui.need2fa?'<label>Authenticator code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus>':''}<div class="row"><button class="btn p">Sign in</button><button type="button" class="btn" onclick="setMode('up')">New here? Sign up</button></div></form>`:
+ `<form onsubmit="signup(event)"><label>Full name</label><input name="name" required><label>Email</label><input name="email" type="email" required><label>Password (8+ characters)</label><input name="pw" type="password" minlength="8" required><label>I am a</label><select name="role"><option value="student">Student</option><option value="instructor">Instructor (needs admin approval)</option></select><div class="row"><button class="btn p">Create account</button><button type="button" class="btn" onclick="setMode('in')">Have an account? Sign in</button></div></form>`}
+ <p style="margin-top:22px">Demo accounts (password demo1234):</p><div class="row" style="margin:0"><button class="btn s" onclick="demo('student')">Student</button><button class="btn s" onclick="demo('instructor')">Instructor</button><button class="btn s" onclick="demo('admin')">Admin</button></div></div>`;return}
+ const r=m.role,T=[['dash','Dashboard'],['courses','All courses'],...(r!=='student'?[['new','Create course'],['grade','Grading']]:[]),...(r==='admin'?[['users','Users']]:[]),['acct','Account']];
+ a.innerHTML=`<h2 style="margin-bottom:6px">Welcome, ${E(m.name.split(' ')[0])}</h2><div class="tabs" style="margin-top:14px">${T.map(t=>`<button class="btn ${ui.tab===t[0]?'on':''}" onclick="go('${t[0]}')">${t[1]}</button>`).join('')}</div>${view()}`}
+(async()=>{try{pub=await fetch('/api/public').then(r=>r.json())}catch(e){}
+ try{S=await api('/state','GET',null,true)}catch(e){}
+ render();onS()})();
+Object.assign(window,{chPw,tfSetup,tfOn,tfOff,approve,resetPw,login,signup,demo,logout,go,openC,closeM,enroll,toggle,gradeQuiz,submitA,addLesson,delLesson,addQ,delQ,addA,delA,editC,newCourse,delCourse,grade,setRole,delUser,setMode,startQuiz,filterC,certificate});
